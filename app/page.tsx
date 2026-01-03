@@ -1,65 +1,132 @@
-import Image from "next/image";
+// src/app/page.tsx
+import { createClient } from "@/lib/supabase/server";
+import AdventureGrid from "./AdventureGrid";
 
-export default function Home() {
-  return (
-    <div className="flex min-h-screen items-center justify-center bg-zinc-50 font-sans dark:bg-black">
-      <main className="flex min-h-screen w-full max-w-3xl flex-col items-center justify-between py-32 px-16 bg-white dark:bg-black sm:items-start">
-        <Image
-          className="dark:invert"
-          src="/next.svg"
-          alt="Next.js logo"
-          width={100}
-          height={20}
-          priority
-        />
-        <div className="flex flex-col items-center gap-6 text-center sm:items-start sm:text-left">
-          <h1 className="max-w-xs text-3xl font-semibold leading-10 tracking-tight text-black dark:text-zinc-50">
-            To get started, edit the page.tsx file.
-          </h1>
-          <p className="max-w-md text-lg leading-8 text-zinc-600 dark:text-zinc-400">
-            Looking for a starting point or more instructions? Head over to{" "}
-            <a
-              href="https://vercel.com/templates?framework=next.js&utm_source=create-next-app&utm_medium=appdir-template-tw&utm_campaign=create-next-app"
-              className="font-medium text-zinc-950 dark:text-zinc-50"
-            >
-              Templates
-            </a>{" "}
-            or the{" "}
-            <a
-              href="https://nextjs.org/learn?utm_source=create-next-app&utm_medium=appdir-template-tw&utm_campaign=create-next-app"
-              className="font-medium text-zinc-950 dark:text-zinc-50"
-            >
-              Learning
-            </a>{" "}
-            center.
-          </p>
-        </div>
-        <div className="flex flex-col gap-4 text-base font-medium sm:flex-row">
-          <a
-            className="flex h-12 w-full items-center justify-center gap-2 rounded-full bg-foreground px-5 text-background transition-colors hover:bg-[#383838] dark:hover:bg-[#ccc] md:w-[158px]"
-            href="https://vercel.com/new?utm_source=create-next-app&utm_medium=appdir-template-tw&utm_campaign=create-next-app"
-            target="_blank"
-            rel="noopener noreferrer"
-          >
-            <Image
-              className="dark:invert"
-              src="/vercel.svg"
-              alt="Vercel logomark"
-              width={16}
-              height={16}
-            />
-            Deploy Now
-          </a>
-          <a
-            className="flex h-12 w-full items-center justify-center rounded-full border border-solid border-black/[.08] px-5 transition-colors hover:border-transparent hover:bg-black/[.04] dark:border-white/[.145] dark:hover:bg-[#1a1a1a] md:w-[158px]"
-            href="https://nextjs.org/docs?utm_source=create-next-app&utm_medium=appdir-template-tw&utm_campaign=create-next-app"
-            target="_blank"
-            rel="noopener noreferrer"
-          >
-            Documentation
-          </a>
-        </div>
+export const metadata = {
+  title: "oktm's Adventure Log",
+};
+
+function pad2(n: number) {
+  return String(n).padStart(2, "0");
+}
+
+function getTokyoYearMonth() {
+  // 例: "2026-01"
+  const parts = new Intl.DateTimeFormat("en-CA", {
+    timeZone: "Asia/Tokyo",
+    year: "numeric",
+    month: "2-digit",
+  }).formatToParts(new Date());
+
+  const y = parts.find((p) => p.type === "year")?.value ?? "1970";
+  const m = parts.find((p) => p.type === "month")?.value ?? "01";
+  return `${y}-${m}`;
+}
+
+function daysInMonth(year: number, month1to12: number) {
+  return new Date(year, month1to12, 0).getDate();
+}
+
+function makeMonthDays(month: string) {
+  // month: "YYYY-MM"
+  const [yStr, mStr] = month.split("-");
+  const y = Number(yStr);
+  const m = Number(mStr); // 1..12
+  const nDays = daysInMonth(y, m);
+
+  const days: string[] = [];
+  for (let d = 1; d <= nDays; d++) {
+    days.push(`${yStr}-${mStr}-${pad2(d)}`); // "YYYY-MM-DD"
+  }
+  return days;
+}
+
+export default async function HomePage({
+  searchParams,
+}: {
+  searchParams: { month?: string };
+}) {
+  const supabase = await createClient();
+  const { data: auth } = await supabase.auth.getUser();
+  const user = auth.user;
+
+  const month = searchParams.month && /^\d{4}-\d{2}$/.test(searchParams.month)
+    ? searchParams.month
+    : getTokyoYearMonth();
+
+  if (!user) {
+    return (
+      <main className="mx-auto max-w-6xl p-6 space-y-4">
+        <h1 className="text-2xl font-bold">oktm&apos;s Adventure Log</h1>
+        <p className="text-sm text-gray-600">ログインしてください。</p>
       </main>
-    </div>
+    );
+  }
+
+  const days = makeMonthDays(month);
+
+  // 月の範囲（start inclusive, end exclusive）
+  const monthStart = `${month}-01T00:00:00+09:00`;
+  const [yStr, mStr] = month.split("-");
+  const y = Number(yStr);
+  const m = Number(mStr);
+  const nextMonthY = m === 12 ? y + 1 : y;
+  const nextMonthM = m === 12 ? 1 : m + 1;
+  const monthEnd = `${nextMonthY}-${pad2(nextMonthM)}-01T00:00:00+09:00`;
+
+  // 1) activities（列）
+  const { data: types, error: typesError } = await supabase
+    .from("activities")
+    .select("id,name,created_at")
+    .eq("user_id", user.id)
+    .order("created_at", { ascending: true });
+
+  // 2) グリッド用セッションだけ取得（note='grid' として扱う）
+  //    ※ セッションをExcel的セルとして扱うための “運用ルール”：
+  //       - start_at = YYYY-MM-DD 00:00 JST
+  //       - end_at   = start_at + duration
+  //       - note     = 'grid'
+  const { data: gridSessions, error: sessionsError } = await supabase
+    .from("activity_sessions")
+    .select("id,activity_type_id,start_at,end_at,note")
+    .eq("user_id", user.id)
+    .eq("note", "grid")
+    .gte("start_at", monthStart)
+    .lt("start_at", monthEnd);
+
+  // 初期値マップ： key = `${YYYY-MM-DD}|${typeId}` -> minutes(number)
+  const initialMinutes: Record<string, number> = {};
+  for (const s of gridSessions ?? []) {
+    if (!s.end_at) continue;
+    const day = String(s.start_at).slice(0, 10); // ここでは start_at を JST(+09)で保存している前提
+    const start = new Date(s.start_at).getTime();
+    const end = new Date(s.end_at).getTime();
+    const minutes = Math.max(0, Math.round((end - start) / 60000));
+    initialMinutes[`${day}|${s.activity_type_id}`] = minutes;
+  }
+
+  return (
+    <main className="mx-auto max-w-7xl p-6 space-y-6">
+      <header className="space-y-1">
+        <h1 className="text-2xl font-bold">oktm&apos;s Adventure Log</h1>
+        <p className="text-sm text-gray-600">
+          {user.email ?? user.id}
+        </p>
+      </header>
+
+      {typesError && (
+        <p className="text-sm text-red-600">activities error: {typesError.message}</p>
+      )}
+      {sessionsError && (
+        <p className="text-sm text-red-600">activity_sessions error: {sessionsError.message}</p>
+      )}
+
+      <AdventureGrid
+        month={month}
+        days={days}
+        types={(types ?? []).map((t) => ({ id: t.id, name: t.name }))}
+        initialMinutes={initialMinutes}
+      />
+    </main>
   );
 }
