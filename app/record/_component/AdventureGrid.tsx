@@ -3,7 +3,7 @@
 
 import { useMemo, useState, useTransition } from "react";
 import { useRouter } from "next/navigation";
-import { updateGridCell } from "./_actions/grid";
+import { updateGridCell } from "../../_actions/grid";
 
 type ActivityType = { id: string; name: string };
 
